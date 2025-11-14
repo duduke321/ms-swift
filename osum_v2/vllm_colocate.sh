@@ -38,4 +38,5 @@ swift rlhf \
     --use_vllm true \
     --vllm_mode colocate \
     --vllm_gpu_memory_utilization 0.3 \
+    --vllm_tensor_parallel_size 2 \
     --sleep_level 1
