@@ -1,10 +1,12 @@
 # 2 * 60GiB
+export MKL_THREADING_LAYER=GNU
+export OMP_NUM_THREADS=1
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
 MAX_PIXELS=1003520 \
 NPROC_PER_NODE=8 \
 VIDEO_MAX_PIXELS=50176 \
 FPS_MAX_FRAMES=12 \
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 swift sft \
     --model /home/work_nfs19/sywang/ckpt/Qwen3-Omni-30B-A3B-Instruct \
     --dataset /home/work_nfs19/sywang/code/ms-swift/data/output.jsonl \
@@ -12,7 +14,7 @@ swift sft \
     --load_from_cache_file true \
     --train_type lora \
     --torch_dtype bfloat16 \
-    --num_train_epochs 1 \
+    --num_train_epochs 10 \
     --per_device_train_batch_size 32 \
     --per_device_eval_batch_size 32 \
     --attn_impl flash_attention_2 \
