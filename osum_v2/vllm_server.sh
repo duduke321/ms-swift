@@ -8,9 +8,11 @@
 # 4 * 54GiB
 # 5s/it (with vLLM)
 # 14s/it (without vLLM)
+export MKL_THREADING_LAYER=GNU
+export OMP_NUM_THREADS=1
+export CUDA_VISIBLE_DEVICES=4,5,6,7
 NPROC_PER_NODE=4 \
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
-CUDA_VISIBLE_DEVICES=4,5,6,7 \
 swift rlhf \
     --rlhf_type gkd \
     --model /home/work_nfs19/sywang/ckpt/Qwen3-Omni-30B-A3B-Instruct \
