@@ -33,7 +33,7 @@ swift rlhf \
     --dataloader_num_workers 4 \
     --dataset_num_proc 4 \
     --deepspeed zero3 \
-    --attn_impl flash_attention_2 \
+    --attn_impl sdpa \
     --teacher_deepspeed zero3_offload \
     --use_vllm true \
     --vllm_mode colocate \
