@@ -3,18 +3,20 @@
 #     --model Qwen/Qwen2.5-7B \
 #     --vllm_max_model_len 2560
 
+# vllm serve /home/work_nfs19/sywang/ckpt/Qwen3-Omni-30B-A3B-Instruct --port 8000 --host 127.0.0.1 --dtype bfloat16 --max-model-len 65536 --allowed-local-media-path / -tp 8
+
 # 4 * 54GiB
 # 5s/it (with vLLM)
 # 14s/it (without vLLM)
 NPROC_PER_NODE=4 \
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
-CUDA_VISIBLE_DEVICES=0,1,2,3 \
+CUDA_VISIBLE_DEVICES=4,5,6,7 \
 swift rlhf \
     --rlhf_type gkd \
-    --model Qwen/Qwen2.5-7B \
-    --teacher_model Qwen/Qwen2.5-14B-Instruct \
-    --train_type full \
-    --dataset 'AI-ModelScope/alpaca-gpt4-data-en#2000' 'AI-ModelScope/alpaca-gpt4-data-zh#2000' \
+    --model /home/work_nfs19/sywang/ckpt/Qwen3-Omni-30B-A3B-Instruct \
+    --teacher_model /home/work_nfs19/sywang/ckpt/Qwen3-Omni-30B-A3B-Instruct \
+    --train_type lora \
+    --dataset 'AI-ModelScope/alpaca-gpt4-data-zh#2000' \
     --split_dataset_ratio 0.01 \
     --seq_kd false \
     --lmbda 0.5 \
@@ -36,7 +38,7 @@ swift rlhf \
     --dataloader_num_workers 4 \
     --dataset_num_proc 4 \
     --deepspeed zero3 \
-    --attn_impl flash_attn \
+    --attn_impl flash_attention_2 \
     --use_vllm true \
     --vllm_mode server \
     --vllm_server_host 127.0.0.1 \
