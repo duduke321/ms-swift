@@ -19,7 +19,6 @@ swift rlhf \
     --num_train_epochs 1 \
     --per_device_train_batch_size 4 \
     --per_device_eval_batch_size 4 \
-    --attn_impl flash_attention_2 \
     --learning_rate 1e-5 \
     --gradient_accumulation_steps 1 \
     --eval_steps 50 \
@@ -34,7 +33,7 @@ swift rlhf \
     --dataloader_num_workers 4 \
     --dataset_num_proc 4 \
     --deepspeed zero3 \
-    --attn_impl flash_attn \
+    --attn_impl flash_attention_2 \
     --teacher_deepspeed zero3_offload \
     --use_vllm true \
     --vllm_mode colocate \
