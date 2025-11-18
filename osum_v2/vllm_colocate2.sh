@@ -4,6 +4,7 @@ export MKL_THREADING_LAYER=GNU
 export OMP_NUM_THREADS=1
 export CUDA_VISIBLE_DEVICES=4,5,6,7
 
+MASTER_PORT=29600 \
 NPROC_PER_NODE=4 \
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
 swift rlhf \
