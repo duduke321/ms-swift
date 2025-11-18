@@ -35,7 +35,7 @@ swift rlhf \
     --dataset_num_proc 4 \
     --deepspeed zero3 \
     --attn_impl flash_attention_2 \
-    --teacher_deepspeed zero3_offload \
+    --teacher_deepspeed zero3_offload
 #    --use_vllm true \
 #    --vllm_mode colocate \
 #    --vllm_gpu_memory_utilization 0.3 \
