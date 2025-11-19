@@ -43,6 +43,7 @@ class ExportArguments(MergeArguments, BaseArguments):
 
     # cached_dataset
     to_cached_dataset: bool = False
+    template_mode: Literal['train', 'rlhf', 'kto'] = 'train'
 
     # ollama
     to_ollama: bool = False
@@ -65,6 +66,11 @@ class ExportArguments(MergeArguments, BaseArguments):
     # compat
     to_peft_format: bool = False
     exist_ok: bool = False
+
+    def load_args_from_ckpt(self) -> None:
+        if self.to_cached_dataset:
+            return
+        super().load_args_from_ckpt()
 
     def _init_output_dir(self):
         if self.output_dir is None:
