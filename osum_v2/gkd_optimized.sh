@@ -31,7 +31,7 @@ swift rlhf \
     --lora_rank 8 \
     --lora_alpha 16 \
     --lora_dropout 0.05 \
-    --lora_target_modules ALL \
+    --target_modules all-linear \
     --dataset 'AI-ModelScope/alpaca-gpt4-data-zh#2000' \
     --split_dataset_ratio 0.01 \
     --max_length 2048 \
