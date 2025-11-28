@@ -24,8 +24,8 @@ NPROC_PER_NODE=8 \
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
 swift rlhf \
     --rlhf_type gkd \
-    --model /home/work_nfs19/sywang/ckpt/Qwen3-Omni-30B-A3B-Instruct \
-    --teacher_model /home/work_nfs19/sywang/ckpt/Qwen3-Omni-30B-A3B-Instruct \
+    --model /home/work_nfs19/asr_data/ckpt/Qwen3-Omni-30B-A3B-Instruct \
+    --teacher_model /home/work_nfs19/asr_data/ckpt/Qwen3-Omni-30B-A3B-Instruct \
     --train_type lora \
     --torch_dtype bfloat16 \
     --lora_rank 8 \
