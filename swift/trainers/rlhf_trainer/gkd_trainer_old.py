@@ -44,11 +44,8 @@ if is_swanlab_available():
 class GKDTrainer(RolloutTrainerMixin, SwiftMixin, HFGKDTrainer):
 
     def __init__(self, model: Optional[Union[PreTrainedModel, nn.Module, str]] = None, *_args, **kwargs):
-        # In this version, we don't use a separate teacher model
-        # Teacher = base model with LoRA disabled
-        # Student = base model with LoRA enabled
-        kwargs.pop('teacher_model', None)  # Remove if provided
-        kwargs.pop('teacher_deepspeed_config', None)  # Remove if provided
+        teacher_model = kwargs.pop('teacher_model')
+        teacher_deepspeed_config = kwargs.pop('teacher_deepspeed_config', None)
         self.vllm_client = kwargs.pop('vllm_client', None)
         kwargs['data_collator'] = identity_data_collator
         super().__init__(model, None, *_args, **kwargs)
@@ -66,20 +63,23 @@ class GKDTrainer(RolloutTrainerMixin, SwiftMixin, HFGKDTrainer):
         # Initialize liger loss
         self._prepare_liger_loss()
 
-        # Verify that the model has LoRA adapters
-        if not is_peft_model(self.accelerator.unwrap_model(self.model)):
-            raise ValueError(
-                "GKDTrainer2 requires the model to have LoRA adapters. "
-                "The student model is base_model + LoRA, and the teacher model is base_model with LoRA disabled."
-            )
-        
-        logger.info("Using shared base model architecture:")
-        logger.info("  - Student model: base_model + LoRA (trainable)")
-        logger.info("  - Teacher model: base_model with LoRA disabled (frozen)")
-
-        # Since we're using the same model, we don't need separate DeepSpeed configs for teacher
-        # Teacher inference will use the student model with LoRA disabled
         self.teacher_ds3_gather_for_generation = args.ds3_gather_for_generation
+        self.is_teacher_ds3 = None
+        # Initialize teacher model
+        if self.is_deepspeed_enabled:
+            if teacher_deepspeed_config is not None:
+                self.is_teacher_ds3 = teacher_deepspeed_config.get('zero_optimization', {}).get('stage') == 3
+                if not self.is_teacher_ds3:
+                    self.teacher_ds3_gather_for_generation = False
+                self.teacher_model = prepare_deepspeed(
+                    teacher_model, self.accelerator, deepspeed_config=teacher_deepspeed_config, training_args=args)
+            else:
+                self.teacher_model = prepare_deepspeed(teacher_model, self.accelerator)
+        else:
+            self.teacher_model = self.accelerator.prepare_model(teacher_model, evaluation_mode=True)
+        self.teacher_model.eval()
+        if self.args.offload_teacher_model:
+            self.offload_model(self.accelerator.unwrap_model(self.teacher_model))
 
         # Initialize rollout infrastructure for vLLM support
         if args.use_vllm:
@@ -132,21 +132,6 @@ class GKDTrainer(RolloutTrainerMixin, SwiftMixin, HFGKDTrainer):
         inputs['position_ids'] = new_position_ids
         return generated_tokens, new_attention_mask, new_labels
 
-    @contextmanager
-    def disable_lora_context(self):
-        """Context manager to temporarily disable LoRA adapters for teacher inference."""
-        unwrapped_model = self.accelerator.unwrap_model(self.model)
-        if is_peft_model(unwrapped_model):
-            # Disable LoRA adapters
-            unwrapped_model.disable_adapter_layers()
-            try:
-                yield unwrapped_model
-            finally:
-                # Re-enable LoRA adapters
-                unwrapped_model.enable_adapter_layers()
-        else:
-            yield unwrapped_model
-
     @patch_profiling_decorator
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         model_inputs = {k: v for k, v in inputs.items() if k not in {'prompt', 'labels'}}
@@ -158,29 +143,24 @@ class GKDTrainer(RolloutTrainerMixin, SwiftMixin, HFGKDTrainer):
 
         if self.use_liger_gkd_loss:
             # Liger fused JSD loss for memory efficiency
-            # Get unwrapped model
-            unwrapped_model = self.accelerator.unwrap_model(model)
-            
-            # Get base model for student (with LoRA enabled)
-            if is_peft_model(unwrapped_model):
-                base_student = unwrapped_model.base_model.model
-            else:
-                base_student = getattr(unwrapped_model, getattr(unwrapped_model, 'base_model_prefix', 'model'),
-                                       unwrapped_model)
+            # Get base models (exclude lm_head to save memory)
+            unwrapped_student = self.accelerator.unwrap_model(model)
+            if is_peft_model(unwrapped_student):
+                unwrapped_student = unwrapped_student.base_model.model
+            base_student = getattr(unwrapped_student, getattr(unwrapped_student, 'base_model_prefix', 'model'),
+                                   unwrapped_student)
 
-            # Forward through student model (LoRA enabled)
+            unwrapped_teacher = self.accelerator.unwrap_model(self.teacher_model)
+            base_teacher = getattr(unwrapped_teacher, getattr(unwrapped_teacher, 'base_model_prefix', 'model'),
+                                   unwrapped_teacher)
+
+            # Forward through base models
             student_outputs = base_student(**model_inputs, use_cache=False)
 
-            # Get teacher outputs by disabling LoRA
-            with torch.no_grad(), self.disable_lora_context() as teacher_model:
-                # Get base model for teacher (with LoRA disabled)
-                if is_peft_model(teacher_model):
-                    base_teacher = teacher_model.base_model.model
-                else:
-                    base_teacher = getattr(teacher_model, getattr(teacher_model, 'base_model_prefix', 'model'),
-                                           teacher_model)
-                
-                teacher_outputs = base_teacher(**model_inputs, use_cache=False)
+            load_context = self.load_teacher_model_context() if self.args.offload_teacher_model else nullcontext()
+            with load_context:
+                with torch.no_grad():
+                    teacher_outputs = base_teacher(**model_inputs, use_cache=False)
 
                 # Get hidden states (shifted)
                 student_hidden = student_outputs.last_hidden_state[:, :-1]
@@ -198,20 +178,21 @@ class GKDTrainer(RolloutTrainerMixin, SwiftMixin, HFGKDTrainer):
                 # Release intermediate tensors
                 del labels_mask, masked_input_ids
 
-                # Get output heads (they share the same lm_head)
-                student_head = unwrapped_model.get_output_embeddings()
-                teacher_head = unwrapped_model.get_output_embeddings()  # Same head
+                # Get output heads
+                student_head = unwrapped_student.get_output_embeddings()
+                teacher_head = unwrapped_teacher.get_output_embeddings()
 
                 # Prepare context managers for gathering parameters in zero3
+                teacher_context = get_gather_if_zero3_context(self, is_zero3=self.is_teacher_ds3)(teacher_head.weight)
                 student_context = get_gather_if_zero3_context(self)(student_head.weight)
 
-                with student_context:
+                with teacher_context, student_context:
                     # Compute liger fused JSD loss
                     loss = self.liger_jsd_loss(
                         student_input=student_hidden,
                         student_weight=student_head.weight,
                         teacher_input=teacher_hidden,
-                        teacher_weight=teacher_head.weight,  # Same weight
+                        teacher_weight=teacher_head.weight,
                         true_labels=true_labels,
                         student_bias=getattr(student_head, 'bias', None),
                         teacher_bias=getattr(teacher_head, 'bias', None),
@@ -225,22 +206,29 @@ class GKDTrainer(RolloutTrainerMixin, SwiftMixin, HFGKDTrainer):
             # Standard loss computation
             if self.args.sft_alpha > 0:
                 model_inputs['labels'] = inputs['labels']
-            
-            # Compute student output (with LoRA enabled)
+            # compute student output
             outputs_student = model(**model_inputs)
 
             model_inputs.pop('labels', None)
-            
-            # Compute teacher output (with LoRA disabled)
-            with torch.no_grad(), self.disable_lora_context():
-                outputs_teacher = model(**model_inputs)
+            load_context = self.load_teacher_model_context() if self.args.offload_teacher_model else nullcontext()
+            with torch.no_grad(), load_context:
+                outputs_teacher = self.teacher_model(**model_inputs)
 
             shifted_labels = torch.roll(inputs['labels'], shifts=-1, dims=1)
             mask = shifted_labels != -100
             shifted_student_logits = outputs_student.logits[mask][None]
             shifted_teacher_logits = outputs_teacher.logits[mask][None]
 
-            # No need to fix vocab_size mismatch since both use the same model
+            # Fix the vocab_size mismatch between Qwen2.5-VL-3B-Instruct and Qwen2.5-VL-7B-Instruct.
+            stu_dim = shifted_student_logits.shape[-1]
+            tea_dim = shifted_teacher_logits.shape[-1]
+            if stu_dim < tea_dim:
+                shifted_student_logits = F.pad(shifted_student_logits, (0, tea_dim - stu_dim), 'constant', 0)
+                shifted_student_logits[..., stu_dim:] = shifted_teacher_logits[..., stu_dim:]
+            elif stu_dim > tea_dim:
+                shifted_teacher_logits = F.pad(shifted_teacher_logits, (0, stu_dim - tea_dim), 'constant', 0)
+                shifted_teacher_logits[..., tea_dim:] = shifted_student_logits[..., tea_dim:]
+
             # compute loss
             loss = self.generalized_jsd_loss(
                 student_logits=shifted_student_logits,
@@ -323,10 +311,10 @@ class GKDTrainer(RolloutTrainerMixin, SwiftMixin, HFGKDTrainer):
                     inputs['labels'] = new_labels
 
             elif self.seq_kd:
-                # Sequence-level KD: use teacher (base model without LoRA) to generate sequences
                 inputs = self._prepare_batch_inputs(inputs)
-                with self.disable_lora_context(), unwrap_model_for_generation(
-                        self.model,
+                load_context = self.load_teacher_model_context() if self.args.offload_teacher_model else nullcontext()
+                with load_context, unwrap_model_for_generation(
+                        self.teacher_model,
                         self.accelerator,
                         gather_deepspeed3_params=self.teacher_ds3_gather_for_generation) as unwrapped_model:
                     new_input_ids, new_attention_mask, new_labels = self.generate_on_policy_outputs(
@@ -386,7 +374,18 @@ class GKDTrainer(RolloutTrainerMixin, SwiftMixin, HFGKDTrainer):
         rng = random.Random(seed)
         return rng.random()
 
+    @contextmanager
+    def load_teacher_model_context(self):
+        """
+        Context manager to load and offload the teacher model with memory and timing profiling.
+        """
+        if not self.args.offload_teacher_model:
+            yield
+            return
 
+        self.load_model(self.accelerator.unwrap_model(self.teacher_model))
+        yield
+        self.offload_model(self.accelerator.unwrap_model(self.teacher_model))
 
     def _prepare_liger_loss(self):
         """Initialize liger loss if enabled."""
