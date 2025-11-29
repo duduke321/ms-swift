@@ -32,7 +32,7 @@ swift rlhf \
     --lora_alpha 16 \
     --lora_dropout 0.05 \
     --target_modules all-linear \
-    --dataset 'AI-ModelScope/alpaca-gpt4-data-zh#2000' \
+    --dataset /home/work_nfs19/sywang/code/ms-swift/data/output.jsonl \
     --split_dataset_ratio 0.01 \
     --max_length 2048 \
     --max_completion_length 512 \
