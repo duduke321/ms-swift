@@ -9,8 +9,8 @@
 #
 # 显存占用估算 (8x GPU):
 #   - 原版 GKD (两个独立模型): ~60-70 GiB per GPU
-#   - LoRA 自蒸馏 (当前): ~35-40 GiB per GPU
-#   - 节省: ~40-50%
+#   - LoRA 自蒸馏 (优化后): ~25-30 GiB per GPU
+#   - 节省: ~50-60% (通过 gradient_checkpointing + freeze_vit/aligner + padding_free)
 #
 # ============================================================================
 
@@ -47,6 +47,10 @@ swift rlhf \
     --per_device_eval_batch_size 1 \
     --learning_rate 1e-5 \
     --gradient_accumulation_steps 1 \
+    --gradient_checkpointing true \
+    --freeze_vit true \
+    --freeze_aligner true \
+    --padding_free true \
     --warmup_ratio 0.05 \
     --deepspeed zero3 \
     --attn_impl flash_attention_2 \
@@ -75,6 +79,12 @@ swift rlhf \
 # DeepSpeed:
 #   --deepspeed zero3   : 学生模型使用 ZeRO-3 优化
 #   (teacher_deepspeed 参数会被自动忽略，因为不需要独立教师模型)
+#
+# 显存优化参数:
+#   --gradient_checkpointing true : 梯度检查点，节省 30-50% 显存（牺牲约 20% 速度）
+#   --freeze_vit true            : 冻结视觉编码器，减少显存和计算
+#   --freeze_aligner true        : 冻结多模态对齐器，减少显存和计算
+#   --padding_free true          : 减少 padding 带来的显存浪费
 #
 # vLLM (不支持):
 #   Qwen3-Omni 多模态模型暂不支持 vLLM 加速
