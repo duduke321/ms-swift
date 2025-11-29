@@ -9,8 +9,13 @@
 #
 # 显存占用估算 (8x GPU):
 #   - 原版 GKD (两个独立模型): ~60-70 GiB per GPU
-#   - LoRA 自蒸馏 (优化后): ~25-30 GiB per GPU
-#   - 节省: ~50-60% (通过 gradient_checkpointing + freeze_vit/aligner + padding_free)
+#   - LoRA 自蒸馏 (优化后): ~30-35 GiB per GPU
+#   - 标准 SFT (对比参考): ~20-25 GiB per GPU
+#   
+#   ⚠️  GKD 固有开销: 即使共享基础模型，仍需同时保存:
+#       - 学生前向传播的激活值 (需要梯度)
+#       - 教师前向传播的激活值 (no_grad但需要用于loss计算)
+#       这导致显存占用约为标准SFT的 1.4-1.5x
 #
 # ============================================================================
 
@@ -20,7 +25,10 @@ export OMP_NUM_THREADS=1
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
 # ===== 分布式训练配置 =====
+MAX_PIXELS=1003520 \
 NPROC_PER_NODE=8 \
+VIDEO_MAX_PIXELS=50176 \
+FPS_MAX_FRAMES=12 \
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
 swift rlhf \
     --rlhf_type gkd \
@@ -28,14 +36,14 @@ swift rlhf \
     --teacher_model /home/work_nfs19/asr_data/ckpt/Qwen3-Omni-30B-A3B-Instruct \
     --train_type lora \
     --torch_dtype bfloat16 \
-    --lora_rank 8 \
-    --lora_alpha 16 \
+    --lora_rank 4 \
+    --lora_alpha 8 \
     --lora_dropout 0.05 \
     --target_modules all-linear \
     --dataset /home/work_nfs19/sywang/code/ms-swift/data/output.jsonl \
     --split_dataset_ratio 0.01 \
-    --max_length 2048 \
-    --max_completion_length 512 \
+    --max_length 1024 \
+    --max_completion_length 256 \
     --dataloader_num_workers 4 \
     --dataset_num_proc 4 \
     --seq_kd false \
@@ -93,18 +101,34 @@ swift rlhf \
 # ============================================================================
 # 运行建议:
 #
-# 1. 首次运行建议减小 batch size 观察显存占用:
-#    --per_device_train_batch_size 2
+# ⚠️ 如果显存仍然不足，尝试以下优化（按优先级排序）:
 #
-# 2. 如果显存充足，可以增大 batch size:
-#    --per_device_train_batch_size 6  # 或 8
+# 1. **减小序列长度** (最有效):
+#    --max_length 768          # 从 1024 降到 768
+#    --max_completion_length 192
 #
-# 3. 使用梯度累积保持有效 batch size:
-#    --per_device_train_batch_size 2
-#    --gradient_accumulation_steps 2
+# 2. **进一步减小 LoRA rank**:
+#    --lora_rank 2             # 从 4 降到 2 (最小推荐值)
+#    --lora_alpha 4
 #
-# 4. 调整 LoRA rank 权衡性能和参数量:
-#    较小 rank (4-8): 更快，参数少，可能性能略低
-#    较大 rank (16-64): 更慢，参数多，可能性能更好
+# 3. **减少 LoRA 应用的层数**:
+#    --target_modules q_proj k_proj v_proj o_proj  # 仅 attention 层
+#
+# 4. **如果使用 ZeRO-2 而非 ZeRO-3**:
+#    --deepspeed zero2         # ZeRO-2 有时更稳定
+#
+# 5. **减小数据加载并行度**:
+#    --dataloader_num_workers 1
+#    --dataset_num_proc 1
+#
+# 6. **考虑使用 CPU offload** (显著降低速度):
+#    需要自定义 DeepSpeed config 启用 offload_optimizer/offload_param
+#
+# 如果以上都无效，GKD 算法本身的双前向传播特性可能与您的硬件不匹配，
+# 建议考虑:
+#   - 使用标准 SFT (swift sft)
+#   - 使用更少的 GPU 但增加梯度累积
+#   - 等待更大显存的硬件
 #
 # ============================================================================
+
