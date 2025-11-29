@@ -170,6 +170,18 @@ class GKDTrainer(RolloutTrainerMixin, SwiftMixin, HFGKDTrainer):
 
             # Forward through student model (LoRA enabled)
             student_outputs = base_student(**model_inputs, use_cache=False)
+            
+            # Extract student hidden states and release full outputs ASAP
+            # This reduces peak memory before teacher forward pass
+            student_hidden = student_outputs.last_hidden_state[:, :-1].contiguous()
+            del student_outputs
+            
+            # Prepare labels early (outside teacher context)
+            labels_mask = inputs['labels'] != -100
+            masked_input_ids = torch.where(labels_mask, inputs['input_ids'],
+                                           torch.full_like(inputs['input_ids'], -100))
+            true_labels = masked_input_ids[:, 1:].contiguous()
+            del labels_mask, masked_input_ids
 
             # Get teacher outputs by disabling LoRA
             with torch.no_grad(), self.disable_lora_context() as teacher_model:
@@ -182,45 +194,34 @@ class GKDTrainer(RolloutTrainerMixin, SwiftMixin, HFGKDTrainer):
                 
                 teacher_outputs = base_teacher(**model_inputs, use_cache=False)
 
-                # Get hidden states (shifted)
-                student_hidden = student_outputs.last_hidden_state[:, :-1]
-                teacher_hidden = teacher_outputs.last_hidden_state[:, :-1]
+                # Extract teacher hidden states and release outputs ASAP
+                teacher_hidden = teacher_outputs.last_hidden_state[:, :-1].contiguous()
+                del teacher_outputs
 
-                # Release full outputs to free memory
-                del student_outputs, teacher_outputs
+            # Get output heads (they share the same lm_head)
+            student_head = unwrapped_model.get_output_embeddings()
+            teacher_head = unwrapped_model.get_output_embeddings()  # Same head
 
-                # Prepare labels (shifted)
-                labels_mask = inputs['labels'] != -100
-                masked_input_ids = torch.where(labels_mask, inputs['input_ids'],
-                                               torch.full_like(inputs['input_ids'], -100))
-                true_labels = masked_input_ids[:, 1:].contiguous()
+            # Prepare context managers for gathering parameters in zero3
+            student_context = get_gather_if_zero3_context(self)(student_head.weight)
 
-                # Release intermediate tensors
-                del labels_mask, masked_input_ids
-
-                # Get output heads (they share the same lm_head)
-                student_head = unwrapped_model.get_output_embeddings()
-                teacher_head = unwrapped_model.get_output_embeddings()  # Same head
-
-                # Prepare context managers for gathering parameters in zero3
-                student_context = get_gather_if_zero3_context(self)(student_head.weight)
-
-                with student_context:
-                    # Compute liger fused JSD loss
-                    loss = self.liger_jsd_loss(
-                        student_input=student_hidden,
-                        student_weight=student_head.weight,
-                        teacher_input=teacher_hidden,
-                        teacher_weight=teacher_head.weight,  # Same weight
-                        true_labels=true_labels,
-                        student_bias=getattr(student_head, 'bias', None),
-                        teacher_bias=getattr(teacher_head, 'bias', None),
-                    )
-                    # loss / grad norm is unexpectedly large, normalize by sequence length
-                    # https://github.com/linkedin/Liger-Kernel/blob/v0.6.3/src/liger_kernel/chunked_loss/jsd_loss.py#L9-L39
-                    loss /= student_hidden.shape[1]
-                # Release hidden states after loss computation
-                del student_hidden, teacher_hidden, true_labels
+            with student_context:
+                # Compute liger fused JSD loss
+                loss = self.liger_jsd_loss(
+                    student_input=student_hidden,
+                    student_weight=student_head.weight,
+                    teacher_input=teacher_hidden,
+                    teacher_weight=teacher_head.weight,  # Same weight
+                    true_labels=true_labels,
+                    student_bias=getattr(student_head, 'bias', None),
+                    teacher_bias=getattr(teacher_head, 'bias', None),
+                )
+                # loss / grad norm is unexpectedly large, normalize by sequence length
+                # https://github.com/linkedin/Liger-Kernel/blob/v0.6.3/src/liger_kernel/chunked_loss/jsd_loss.py#L9-L39
+                loss /= student_hidden.shape[1]
+            
+            # Release hidden states after loss computation
+            del student_hidden, teacher_hidden, true_labels
         else:
             # Standard loss computation
             if self.args.sft_alpha > 0:
@@ -231,17 +232,25 @@ class GKDTrainer(RolloutTrainerMixin, SwiftMixin, HFGKDTrainer):
 
             model_inputs.pop('labels', None)
             
+            # Prepare mask early to reduce memory overhead
+            shifted_labels = torch.roll(inputs['labels'], shifts=-1, dims=1)
+            mask = shifted_labels != -100
+            
             # Compute teacher output (with LoRA disabled)
             with torch.no_grad(), self.disable_lora_context():
                 outputs_teacher = model(**model_inputs)
+                # Extract teacher logits and release outputs ASAP
+                shifted_teacher_logits = outputs_teacher.logits[mask][None].contiguous()
+                del outputs_teacher
 
-            shifted_labels = torch.roll(inputs['labels'], shifts=-1, dims=1)
-            mask = shifted_labels != -100
-            shifted_student_logits = outputs_student.logits[mask][None]
-            shifted_teacher_logits = outputs_teacher.logits[mask][None]
+            # Extract student logits
+            shifted_student_logits = outputs_student.logits[mask][None].contiguous()
+            
+            # Save SFT loss if needed before releasing outputs_student
+            sft_loss = outputs_student.loss if self.args.sft_alpha > 0 else None
+            del mask, shifted_labels
 
-            # No need to fix vocab_size mismatch since both use the same model
-            # compute loss
+            # Compute loss
             loss = self.generalized_jsd_loss(
                 student_logits=shifted_student_logits,
                 teacher_logits=shifted_teacher_logits,
@@ -249,9 +258,13 @@ class GKDTrainer(RolloutTrainerMixin, SwiftMixin, HFGKDTrainer):
             )
             if self._trl_version_gte_0_24:
                 loss /= shifted_student_logits.shape[1]
-            # Add SFT loss if enabled (common for both paths)
+            
+            # Release logits
+            del shifted_student_logits, shifted_teacher_logits
+            
+            # Add SFT loss if enabled
             if self.args.sft_alpha > 0:
-                loss = loss + self.args.sft_alpha * outputs_student.loss
+                loss = loss + self.args.sft_alpha * sft_loss
 
         # Return loss
         if return_outputs:
