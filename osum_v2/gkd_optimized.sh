@@ -47,9 +47,9 @@ swift rlhf \
     --deepspeed zero3 \
     --attn_impl flash_attention_2 \
     --output_dir output \
-    --eval_steps 50 \
-    --save_steps 50 \
-    --save_total_limit 2 \
+    --eval_steps 1000 \
+    --save_steps 1000 \
+    --save_total_limit 0 \
     --logging_steps 5 \
     --save_only_model true
 
