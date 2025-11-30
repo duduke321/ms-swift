@@ -26,17 +26,19 @@ swift rlhf \
     --split_dataset_ratio 0.01 \
     --max_length 1024 \
     --max_completion_length 256 \
-    --dataloader_num_workers 4 \
+    --dataloader_num_workers 8 \
     --dataset_num_proc 4 \
     --seq_kd false \
     --lmbda 0.5 \
+    --use_liger_kernel true \
+    --sft_alpha 0 \
     --temperature 2.0 \
     --beta 0.5 \
     --num_train_epochs 1 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \
     --learning_rate 1e-5 \
-    --gradient_accumulation_steps 1 \
+    --gradient_accumulation_steps 4 \
     --gradient_checkpointing true \
     --freeze_vit true \
     --freeze_aligner true \
