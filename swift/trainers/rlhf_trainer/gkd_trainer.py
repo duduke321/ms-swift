@@ -175,7 +175,7 @@ class GKDTrainer(RolloutTrainerMixin, SwiftMixin, HFGKDTrainer):
             # This reduces peak memory before teacher forward pass
             student_hidden = student_outputs.last_hidden_state[:, :-1].contiguous()
             del student_outputs
-            
+            print("学生输出完成，释放内存")
             # Prepare labels early (outside teacher context)
             labels_mask = inputs['labels'] != -100
             masked_input_ids = torch.where(labels_mask, inputs['input_ids'],
@@ -197,7 +197,7 @@ class GKDTrainer(RolloutTrainerMixin, SwiftMixin, HFGKDTrainer):
                 # Extract teacher hidden states and release outputs ASAP
                 teacher_hidden = teacher_outputs.last_hidden_state[:, :-1].contiguous()
                 del teacher_outputs
-
+            print("教师输出完成，释放内存")
             # Get output heads (they share the same lm_head)
             student_head = unwrapped_model.get_output_embeddings()
             teacher_head = unwrapped_model.get_output_embeddings()  # Same head
