@@ -29,9 +29,9 @@ swift rlhf \
     --dataloader_num_workers 8 \
     --dataset_num_proc 4 \
     --seq_kd false \
-    --lmbda 0.5 \
-    --use_liger_kernel true \
-    --sft_alpha 0 \
+    --lmbda 0 \
+    --use_liger_kernel false \
+    --sft_alpha 1.0 \
     --temperature 2.0 \
     --beta 0.5 \
     --num_train_epochs 1 \
