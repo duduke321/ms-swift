@@ -10,7 +10,7 @@ for test_set in ${test_sets[@]}; do
     python infer.py \
         --wav_scp $wav_scp \
         --output $output_text \
-        --model_path /home/work_nfs19/sywang/code/ms-swift/qwen3_omni/output/v3-20251109-155420/checkpoint-194-merged
+        --model_path /home/work_nfs19/asr_data/ckpt/Qwen3-Omni-30B-A3B-Instruct/
 
     python /home/work_nfs11/code/sywang/workspace/toolkit/duduke/wenet_tools/compute-wer.py --char=1 \
         $text \
