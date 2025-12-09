@@ -77,6 +77,7 @@ def get_packed_seq_params(position_ids: torch.Tensor) -> PackedSeqParams:
 
 
 def split_cp_inputs(inputs: torch.Tensor, cu_seqlens: torch.Tensor, dim: int):
+    # TODO: compat bshd
     if dim < 0:
         dim = (dim + inputs.ndim) % inputs.ndim
     new_inputs = []
@@ -139,7 +140,8 @@ def profiling_context(trainer, name: str):
     profiling_metrics = {f'profiling/Time taken: {trainer.__class__.__name__}.{name}': duration}
     wandb_writer = get_wandb_writer()
     if wandb_writer and trainer.is_main_process:
-        wandb_writer.log(profiling_metrics)
+        step = getattr(getattr(wandb_writer, 'run', None), 'step', None)
+        wandb_writer.log(profiling_metrics, step=step)
 
 
 def profiling_decorator(func):

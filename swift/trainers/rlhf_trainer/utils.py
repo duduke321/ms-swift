@@ -14,6 +14,7 @@ import datasets
 import torch
 import torch.nn.functional as F
 from msgspec import field
+from packaging import version
 from peft.tuners import lora
 from peft.tuners.lora import LoraLayer
 from PIL import Image
@@ -50,6 +51,25 @@ if is_vllm_available():
         @property
         def embeddings(self):
             return self.lora_embeddings
+
+
+def nanstd(tensor: torch.Tensor) -> torch.Tensor:
+    """
+    refer: trl/trainer/utils
+    Compute the standard deviation of a tensor, ignoring NaNs. This function only supports 1D tensors.
+
+    Args:
+        tensor (`torch.Tensor`):
+            Input tensor of shape `(N,)`.
+
+    Returns:
+        `torch.Tensor`:
+            Standard deviation of the tensor, ignoring NaNs.
+    """
+    variance = torch.nanmean((tensor - torch.nanmean(tensor, keepdim=True))**2)  # Compute variance ignoring NaNs
+    count = torch.sum(~torch.isnan(tensor))  # Count of non-NaN values
+    variance *= count / (count - 1)  # Bessel's correction
+    return torch.sqrt(variance)
 
 
 # code borrowed from verl/verl/utils/memory_utils.py
@@ -590,7 +610,6 @@ def replace_assistant_response_with_ids(messages: 'Messages',
 
 def patch_save_last_checkpoint():
     import trl
-    from packaging import version
     if version.parse(trl.__version__) >= version.parse('0.20'):
         return
 
@@ -745,6 +764,14 @@ class FlattenedTensorMetadata(BaseModel):
         raise ValueError('dtype must be a torch.dtype or str')
 
 
+class TensorMetadata(BaseModel):
+    """Metadata for a single tensor."""
+    name: str
+    shape: Tuple[int, ...]
+    dtype: str
+    numel: int
+
+
 class UpdateFlattenedAdapterRequest(BaseModel):
     lora_int_id: int
     peft_config: LoraConfig
@@ -753,6 +780,13 @@ class UpdateFlattenedAdapterRequest(BaseModel):
 
 class UpdateFlattenedParamsRequest(BaseModel):
     metadatas: List[FlattenedTensorMetadata]
+
+
+class UpdateAdapterRequest(BaseModel):
+    """Request for non-flattened adapter weight update"""
+    lora_int_id: int
+    peft_config: LoraConfig
+    lora_tensors_metadata: List[TensorMetadata]
 
 
 class FlattenedTensorBucket:
@@ -983,7 +1017,7 @@ def compute_chord_loss(trainer, grpo_loss: torch.Tensor) -> torch.Tensor:
         chord_sft_loss = per_token_loss_func(outputs, labels)
 
         if trainer.args.chord_enable_phi_function:
-            per_token_probs = torch.exp(-chord_sft_loss)
+            per_token_probs = torch.exp(-chord_sft_loss.detach())
             phi = per_token_probs * (1 - per_token_probs)
             chord_sft_loss *= phi
 
@@ -1137,12 +1171,24 @@ def get_even_process_data(trainer, global_data: List[T]) -> List[T]:
     return global_data[start:end]
 
 
+def check_vllm_version_ge(min_version: str) -> bool:
+    """check if the vllm version is greater than or equal to the minimum version"""
+    if not is_vllm_available():
+        return False
+    import vllm
+    vllm_version = vllm.__version__
+    # if dev version, regard it as latest version
+    if vllm_version is None or 'dev' in vllm_version:
+        return True
+    return version.parse(vllm_version) >= version.parse(min_version)
+
+
 # ============================================================================
 # Padding-free utilities
 # ============================================================================
 
 
-def pad_logps_back_to_batch(logps_rmpad: torch.Tensor,
+def pad_logps_back_to_batch(logps_rmpad: Optional[torch.Tensor],
                             position_ids: Optional[torch.Tensor] = None,
                             logits_to_keep: int = None,
                             batch_size: int = None,
@@ -1152,11 +1198,11 @@ def pad_logps_back_to_batch(logps_rmpad: torch.Tensor,
     """
     Restore padding-free logprobs back to [batch_size, seq_len] shape with LEFT PADDING.
 
-    - Input: logps in rmpad format [1, total_nnz]
+    - Input: logps in rmpad format [1, total_nnz] or None
     - Output: logps in batch format [batch_size, max_seq_len] with data right-aligned
 
     Args:
-        logps_rmpad: [1, total_nnz] per-token log probabilities in padding_free format
+        logps_rmpad: [1, total_nnz] per-token log probabilities in padding_free format or None
         position_ids: [1, total_nnz] position ids to determine sequence boundaries (deprecated, use seq_lengths)
         logits_to_keep: number of tokens to keep per sequence (= max_seq_len)
         batch_size: number of sequences in the batch
@@ -1165,9 +1211,12 @@ def pad_logps_back_to_batch(logps_rmpad: torch.Tensor,
         pad_value: value to use for padding positions (default: -1e10 for logps, use 0.0 for masks)
 
     Returns:
-        logps_padded: [batch_size, logits_to_keep] padded log probabilities (left-padded, data right-aligned)
-        valid_mask: [batch_size, logits_to_keep] mask indicating valid (non-padding) positions
+        logps_padded: [batch_size, logits_to_keep] padded log probabilities (left-padded, data right-aligned) or None
+        valid_mask: [batch_size, logits_to_keep] mask indicating valid (non-padding) positions or None
     """
+    if logps_rmpad is None:
+        return None, None
+
     if dtype is None:
         dtype = logps_rmpad.dtype
 

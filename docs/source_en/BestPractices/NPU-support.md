@@ -37,6 +37,24 @@ pip install deepspeed
 
 # If you need the evaluation functionality, please install the following package
 pip install evalscope[opencompass]
+
+# If you need to use MindSpeed ​​(Megatron-LM), please install the following packages
+# 1. Obtain and switch Megatron-LM to core_v0.12.1
+git clone https://github.com/NVIDIA/Megatron-LM.git
+cd Megatron-LM
+git checkout core_v0.12.1
+cd ..
+
+# 2. Install MindSpeed
+git clone https://gitcode.com/Ascend/MindSpeed.git
+cd MindSpeed
+git checkout 0016137f0dcfeab3308e0d16994046740c0e4ad9
+pip install -e .
+cd ..
+
+# 3. Set environment variables
+export PYTHONPATH=$PYTHONPATH:<your_local_megatron_lm_path>
+export MEGATRON_LM_PATH=<your_local_megatron_lm_path>
 ```
 
 Check if the test environment is installed correctly and whether the NPU can be loaded properly.
@@ -109,7 +127,7 @@ Check the status of the NPU. Detailed information about the `npu-smi` command ca
 ```
 
 ## Fine-tuning
-The following introduces the fine-tuning of LoRA. To perform full-parameter fine-tuning, simply set the parameter `--train_type full`.
+The following introduces the fine-tuning of LoRA. To perform full-parameter fine-tuning, simply set the parameter `--train_type full`. For **more training scripts**, refer to [here](https://github.com/modelscope/ms-swift/tree/main/examples/ascend/train).
 
 | Model Size | Number of NPUs | Deepspeed Type | Max Memory Usage   |
 |------|-------|-------------|-----------|
@@ -284,3 +302,8 @@ ASCEND_RT_VISIBLE_DEVICES=0 swift deploy --model xxx/checkpoint-xxx-merged --max
 | Quantization/QLoRA       |
 | Megatron-related modules |
 | Using sglang as inference engine |
+
+
+## NPU Wechat Group
+
+<img src="https://raw.githubusercontent.com/modelscope/ms-swift/main/docs/resources/wechat/npu.png" width="250">
